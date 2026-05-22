@@ -106,3 +106,13 @@ Here is how professionals upgrade this exact concept into legitimate, enterprise
 | **Process Privilege** | User Mode standard Windows Form thread. | Custom Windows Shell substitution via Group Policy Object GPO execution constraints. |
 | **Keyboard Restriction** | Unmanaged OS Hooks via user32 dynamic library. | Native Windows Assigned Access configurations restricting system key assignments at the kernel level. |
 | **Lifecycle Architecture** | Local manual invocation. | Controlled OS Service deployment managed via dedicated background watchdog processes. |
+
+---
+
+## 📚 Educational Materials & Theory
+
+For a comprehensive theoretical guide detailing the mechanics of screen blockers, internal Win32 API behaviors, step-by-step incident response tactics, and manual remediation strategies, explore our detailed lecture notes:
+
+👉 **[Read the Full WinLocker Theory & Defense Guide (THEORY.md)](THEORY.md)**
+
+---
