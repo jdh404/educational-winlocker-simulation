@@ -1,24 +1,28 @@
 using System;
 using System.Drawing;
 using System.Windows.Forms;
-using System.Runtime.InteropServices; // Поддержка WinAPI функций (P/Invoke)
+using System.Runtime.InteropServices;
+using System.Diagnostics;
 
 namespace Test_win
 {
-    // 1. ГЛАВНАЯ ФОРМА-ФОН (Полупрозрачная тонировка экрана + хук для блокировки Win)
+    /// <summary>
+    /// Главная форма экрана блокировки - полупрозрачный фон с системой хука для перехвата клавиш Win
+    /// </summary>
     public partial class LockForm : Form
     {
-        private ControlForm controlWindow; // Ссылка на наше непрозрачное окошко ввода
-
-        // =================== КОД ДЛЯ ХУКА КЛАВИАТУРЫ ===================
         private const int WH_KEYBOARD_LL = 13;
         private const int WM_KEYDOWN = 0x0100;
         private const int VK_LWIN = 0x5B;
         private const int VK_RWIN = 0x5C;
+        
+        private static readonly Color BackgroundColor = Color.FromArgb(20, 20, 22);
+        private const double BackgroundOpacity = 0.65;
 
+        private ControlForm controlWindow;
         private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
-        private LowLevelKeyboardProc _proc;
-        private IntPtr _hookID = IntPtr.Zero;
+        private LowLevelKeyboardProc keyboardHookCallback;
+        private IntPtr keyboardHookId = IntPtr.Zero;
 
         [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
@@ -31,46 +35,59 @@ namespace Test_win
 
         [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
         private static extern IntPtr GetModuleHandle(string lpModuleName);
-
-        private void SetWinHook()
+        
+        /// <summary>
+        /// Устанавливает низкоуровневый хук клавиатуры для перехвата нажатий клавиши Win
+        /// </summary>
+        private void SetKeyboardHook()
         {
-            _proc = HookCallback;
-            using (System.Diagnostics.Process curProcess = System.Diagnostics.Process.GetCurrentProcess())
-            using (System.Diagnostics.ProcessModule curModule = curProcess.MainModule)
+            keyboardHookCallback = HookCallback;
+            
+            using (Process currentProcess = Process.GetCurrentProcess())
+            using (ProcessModule mainModule = currentProcess.MainModule)
             {
-                _hookID = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(curModule.ModuleName), 0);
+                keyboardHookId = SetWindowsHookEx(
+                    WH_KEYBOARD_LL, 
+                    keyboardHookCallback, 
+                    GetModuleHandle(mainModule.ModuleName), 
+                    0);
             }
         }
 
-        private void UnhookWinHook()
+        /// <summary>
+        /// Удаляет установленный хук клавиатуры
+        /// </summary>
+        private void RemoveKeyboardHook()
         {
-            if (_hookID != IntPtr.Zero)
+            if (keyboardHookId != IntPtr.Zero)
             {
-                UnhookWindowsHookEx(_hookID);
-                _hookID = IntPtr.Zero;
+                UnhookWindowsHookEx(keyboardHookId);
+                keyboardHookId = IntPtr.Zero;
             }
         }
 
+        /// <summary>
+        /// Функция обратного вызова для обработки событий клавиатуры.
+        /// Блокирует клавиши Windows (Win+X комбинации)
+        /// </summary>
         private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
         {
             if (nCode >= 0 && wParam == (IntPtr)WM_KEYDOWN)
             {
-                int vkCode = Marshal.ReadInt32(lParam);
-                if (vkCode == VK_LWIN || vkCode == VK_RWIN)
-                {
-                    // Блокируем клавишу Win, возвращая 1 вместо передачи системе
-                    return (IntPtr)1;
-                }
+                int virtualKeyCode = Marshal.ReadInt32(lParam);
+                if (virtualKeyCode == VK_LWIN || virtualKeyCode == VK_RWIN)
+                    return (IntPtr)1; // Мгновенный возврат для предотвращения фризов ОС
             }
-            return CallNextHookEx(_hookID, nCode, wParam, lParam);
+            return CallNextHookEx(keyboardHookId, nCode, wParam, lParam);
         }
-        // =================== КОНЕЦ КОДА ДЛЯ ХУКА ===================
-
+        
+        /// <summary>
+        /// Конструктор главной формы блокировки
+        /// </summary>
         public LockForm()
         {
             InitializeComponent();
             SetupBackgroundUI();
-            
             this.FormClosing += LockForm_FormClosing;
             this.Shown += LockForm_Shown;
             this.LocationChanged += KeepControlFormCentered;
@@ -81,6 +98,7 @@ namespace Test_win
         {
             this.Size = new Size(800, 600);
             this.StartPosition = FormStartPosition.CenterScreen;
+            this.AutoScaleMode = AutoScaleMode.Dpi; // Включена поддержка High-DPI экранов
         }
 
         private void SetupBackgroundUI()
@@ -88,15 +106,13 @@ namespace Test_win
             this.WindowState = FormWindowState.Maximized;
             this.FormBorderStyle = FormBorderStyle.None;
             this.TopMost = true;
-            this.BackColor = Color.FromArgb(20, 20, 22); 
-            this.Opacity = 0.65; // Полупрозрачность для эффекта тонирования
+            this.BackColor = BackgroundColor;
+            this.Opacity = BackgroundOpacity;
         }
-
+        
         private void LockForm_Shown(object sender, EventArgs e)
         {
-            // Активируем хук при показе формы
-            SetWinHook();
-
+            SetKeyboardHook();
             controlWindow = new ControlForm(this);
             controlWindow.Show(this);
             KeepControlFormCentered(null, null);
@@ -106,206 +122,238 @@ namespace Test_win
         {
             if (controlWindow != null && !controlWindow.IsDisposed)
             {
-                controlWindow.Location = new Point(
-                    this.Location.X + (this.Width - controlWindow.Width) / 2,
-                    this.Location.Y + (this.Height - controlWindow.Height) / 2
-                );
+                int newX = this.Location.X + (this.Width - controlWindow.Width) / 2;
+                int newY = this.Location.Y + (this.Height - controlWindow.Height) / 2;
+                controlWindow.Location = new Point(newX, newY);
             }
         }
 
         private void LockForm_FormClosing(object sender, FormClosingEventArgs e)
         {
+            // Блокируем закрытие ТОЛЬКО если это прямое действие пользователя (Alt+F4 или Диспетчер задач как окно)
             if (e.CloseReason == CloseReason.UserClosing)
             {
-                e.Cancel = true; // Запрещаем закрывать форму вручную пользователю
+                e.Cancel = true;
             }
             else
             {
-                UnhookWinHook(); // Снимаем хук при системном выходе (Application.Exit)
+                // Если закрывает сама программа (ApplicationExit / FormManager) — корректно чистим хуки
+                RemoveKeyboardHook();
             }
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
-            UnhookWinHook(); // Страховка снятия хука при уничтожении окна
+            RemoveKeyboardHook();
             base.OnFormClosed(e);
         }
 
         protected override void WndProc(ref Message m)
         {
             const int WM_CLOSE = 0x0010;
-            if (m.Msg == WM_CLOSE) return;
+            if (m.Msg == WM_CLOSE) 
+                return; // Игнорируем внешние Win32-запросы на закрытие окна
             base.WndProc(ref m);
         }
     }
 
-    // 2. ФОРМА ИНТЕРФЕЙСА (Полностью непрозрачная, центрируется поверх фона)
+    /// <summary>
+    /// Форма ввода пароля - полностью непрозрачное окно с интерфейсом входа
+    /// </summary>
     public class ControlForm : Form
     {
-        private TextBox txtPassword;
-        private Button btnUnlock;
-        private Label lblMessage;
-        private Label lblInstruction;
         private const string UnlockPassword = "1234";
-        private Form _ownerBackground;
+        private static readonly Color FormBackgroundColor = Color.FromArgb(36, 36, 38);
+        private static readonly Color TextBoxBackgroundColor = Color.FromArgb(48, 48, 50);
+        private static readonly Color ButtonColor = Color.FromArgb(0, 122, 255);
+        private static readonly Color TitleColor = Color.FromArgb(0, 122, 255);
+        private static readonly Color SubtextColor = Color.FromArgb(142, 142, 147);
+        
+        private const int FormWidth = 500;
+        private const int FormHeight = 400;
+        private const int TextBoxWidth = 260;
+        private const int TextBoxHeight = 36;
+        private const int ButtonWidth = 260;
+        private const int ButtonHeight = 45;
+        private const int TitleHeight = 80;
 
+        private TextBox passwordInput;
+        private Button unlockButton;
+        private Label titleLabel;
+        private Label instructionLabel;
+        private Form backgroundForm;
+        
         public ControlForm(Form ownerBackground)
         {
-            _ownerBackground = ownerBackground;
-            
-            this.Size = new Size(500, 400);
+            backgroundForm = ownerBackground;
+            this.Size = new Size(FormWidth, FormHeight);
             this.FormBorderStyle = FormBorderStyle.None;
-            this.StartPosition = FormStartPosition.Manual; 
+            this.StartPosition = FormStartPosition.Manual;
+            this.AutoScaleMode = AutoScaleMode.Dpi; // Защита интерфейса от размытия и кривых шрифтов
             this.ShowInTaskbar = false;
             this.TopMost = true;
-            this.Opacity = 1.0; // Плотное, непрозрачное окно интерфейса
-            this.BackColor = Color.FromArgb(36, 36, 38);
-
-            // Главный заголовок
-            lblMessage = new Label();
-            lblMessage.Text = "DEMO LOCK SYSTEM";
-            lblMessage.ForeColor = Color.FromArgb(0, 122, 255);
-            lblMessage.Font = new Font("Segoe UI", 20, FontStyle.Bold);
-            lblMessage.TextAlign = ContentAlignment.MiddleCenter;
-            lblMessage.Dock = DockStyle.Top;
-            lblMessage.Height = 80;
-
-            // Текст инструкции
-            lblInstruction = new Label();
-            lblInstruction.Text = "Safe UI testing environment active.\nTo exit, please enter the designated PIN-code:";
-            lblInstruction.ForeColor = Color.FromArgb(142, 142, 147);
-            lblInstruction.Font = new Font("Segoe UI", 11, FontStyle.Regular);
-            lblInstruction.TextAlign = ContentAlignment.MiddleCenter;
-            lblInstruction.Location = new Point(20, 110);
-            lblInstruction.Size = new Size(460, 50);
-
-            // Поле для ввода пароля
-            txtPassword = new TextBox();
-            txtPassword.Font = new Font("Segoe UI", 16, FontStyle.Regular);
-            txtPassword.PasswordChar = '●';
-            txtPassword.TextAlign = HorizontalAlignment.Center;
-            txtPassword.Size = new Size(260, 36);
-            txtPassword.Location = new Point((this.Width - 260) / 2, 200);
-            txtPassword.BackColor = Color.FromArgb(48, 48, 50);
-            txtPassword.ForeColor = Color.White;
-            txtPassword.BorderStyle = BorderStyle.FixedSingle;
-            txtPassword.KeyPress += TxtPassword_KeyPress;
-
-            // Кнопка проверки
-            btnUnlock = new Button();
-            btnUnlock.Text = "Verify PIN";
-            btnUnlock.Font = new Font("Segoe UI", 12, FontStyle.Bold);
-            btnUnlock.Size = new Size(260, 45);
-            btnUnlock.Location = new Point((this.Width - 260) / 2, 260);
-            btnUnlock.BackColor = Color.FromArgb(0, 122, 255);
-            btnUnlock.ForeColor = Color.White;
-            btnUnlock.FlatStyle = FlatStyle.Flat;
-            btnUnlock.FlatAppearance.BorderSize = 0;
-            btnUnlock.Cursor = Cursors.Hand;
-            btnUnlock.Click += BtnUnlock_Click;
-
-            this.Controls.Add(lblMessage);
-            this.Controls.Add(lblInstruction);
-            this.Controls.Add(txtPassword);
-            this.Controls.Add(btnUnlock);
-
-            this.Shown += (s, e) => txtPassword.Focus();
+            this.Opacity = 1.0;
+            this.BackColor = FormBackgroundColor;
+            InitializeUI();
+            this.Shown += (s, e) => passwordInput.Focus();
         }
 
-        private void TxtPassword_KeyPress(object sender, KeyPressEventArgs e)
+        private void InitializeUI()
+        {
+            titleLabel = new Label();
+            titleLabel.Text = "DEMO LOCK SYSTEM";
+            titleLabel.ForeColor = TitleColor;
+            titleLabel.Font = new Font("Segoe UI", 20, FontStyle.Bold);
+            titleLabel.TextAlign = ContentAlignment.MiddleCenter;
+            titleLabel.Dock = DockStyle.Top;
+            titleLabel.Height = TitleHeight;
+
+            instructionLabel = new Label();
+            instructionLabel.Text = "Safe UI testing environment active.\r\nTo exit, please enter the designated PIN-code:";
+            instructionLabel.ForeColor = SubtextColor;
+            instructionLabel.Font = new Font("Segoe UI", 11, FontStyle.Regular);
+            instructionLabel.TextAlign = ContentAlignment.MiddleCenter;
+            instructionLabel.Location = new Point(20, 110);
+            instructionLabel.Size = new Size(460, 50);
+
+            passwordInput = new TextBox();
+            passwordInput.Font = new Font("Segoe UI", 16, FontStyle.Regular);
+            passwordInput.PasswordChar = '●';
+            passwordInput.TextAlign = HorizontalAlignment.Center;
+            passwordInput.Size = new Size(TextBoxWidth, TextBoxHeight);
+            passwordInput.Location = new Point((this.Width - TextBoxWidth) / 2, 200);
+            passwordInput.BackColor = TextBoxBackgroundColor;
+            passwordInput.ForeColor = Color.White;
+            passwordInput.BorderStyle = BorderStyle.FixedSingle;
+            passwordInput.KeyPress += PasswordInput_KeyPress;
+
+            unlockButton = new Button();
+            unlockButton.Text = "Verify PIN";
+            unlockButton.Font = new Font("Segoe UI", 12, FontStyle.Bold);
+            unlockButton.Size = new Size(ButtonWidth, ButtonHeight);
+            unlockButton.Location = new Point((this.Width - ButtonWidth) / 2, 260);
+            unlockButton.BackColor = ButtonColor;
+            unlockButton.ForeColor = Color.White;
+            unlockButton.FlatStyle = FlatStyle.Flat;
+            unlockButton.FlatAppearance.BorderSize = 0;
+            unlockButton.Cursor = Cursors.Hand;
+            unlockButton.Click += UnlockButton_Click;
+
+            this.Controls.Add(titleLabel);
+            this.Controls.Add(instructionLabel);
+            this.Controls.Add(passwordInput);
+            this.Controls.Add(unlockButton);
+        }
+        
+        private void PasswordInput_KeyPress(object sender, KeyPressEventArgs e)
         {
             if (e.KeyChar == (char)Keys.Enter)
             {
-                CheckPassword();
+                VerifyPassword();
                 e.Handled = true;
             }
         }
 
-        private void BtnUnlock_Click(object sender, EventArgs e)
+        private void UnlockButton_Click(object sender, EventArgs e)
         {
-            CheckPassword();
+            VerifyPassword();
         }
 
-        private void CheckPassword()
+        private void VerifyPassword()
         {
-            if (txtPassword.Text == UnlockPassword)
+            if (passwordInput.Text == UnlockPassword)
             {
-                CustomMessageBox.Show(this, "Access granted! The testing session closed successfully.", "Success", false);
+                CustomMessageBox.Show(this, "Access granted! The testing session closed successfully.", "Success", isError: false);
                 
-                // Корректно закрываем приложение: убираем флаг отмены, гасим формы и выходим
-                if (_ownerBackground != null)
-                {
-                    _ownerBackground.Close(); 
-                }
+                // Сначала выключаем глобальное приложение, чтобы цепочка выгрузки Windows Forms отработала штатно
                 Application.Exit();
             }
             else
             {
-                CustomMessageBox.Show(this, "Invalid PIN entered.\nPlease try again.", "Authentication Error", true);
-                txtPassword.Clear();
-                txtPassword.Focus();
+                CustomMessageBox.Show(this, "Invalid PIN entered.\r\nPlease try again.", "Authentication Error", isError: true);
+                passwordInput.Clear();
+                passwordInput.Focus();
             }
         }
     }
 
-    // 3. СТИЛИЗОВАННЫЙ MESSAGEBOX (Полностью непрозрачный)
+    /// <summary>
+    /// Пользовательское диалоговое окно сообщений
+    /// </summary>
     public class CustomMessageBox : Form
     {
+        private const int DialogWidth = 400;
+        private const int DialogHeight = 200;
+        private static readonly Color DialogBackgroundColor = Color.FromArgb(48, 48, 50);
+        private static readonly Color OkButtonColor = Color.FromArgb(68, 68, 70);
+        private static readonly Color SuccessBorderColor = Color.FromArgb(0, 122, 255);
+        private static readonly Color ErrorBorderColor = Color.FromArgb(255, 69, 58);
+        private const int BorderThickness = 2;
+        
         public CustomMessageBox(string text, string title, bool isError)
         {
-            this.Size = new Size(400, 200);
+            this.Size = new Size(DialogWidth, DialogHeight);
             this.FormBorderStyle = FormBorderStyle.None;
-            this.StartPosition = FormStartPosition.CenterParent; 
-            this.BackColor = Color.FromArgb(48, 48, 50); 
+            this.StartPosition = FormStartPosition.Manual; // Переключено на ручное точное позиционирование
+            this.AutoScaleMode = AutoScaleMode.Dpi;
             this.ShowInTaskbar = false;
-            this.TopMost = true; 
+            this.TopMost = true;
 
-            Label lblTitle = new Label();
-            lblTitle.Text = title.ToUpper();
-            lblTitle.Font = new Font("Segoe UI", 11, FontStyle.Bold);
-            lblTitle.ForeColor = isError ? Color.FromArgb(255, 69, 58) : Color.FromArgb(0, 122, 255); 
-            lblTitle.Location = new Point(20, 20);
-            lblTitle.Size = new Size(360, 25);
+            Label titleLabel = new Label();
+            titleLabel.Text = title.ToUpper();
+            titleLabel.Font = new Font("Segoe UI", 11, FontStyle.Bold);
+            titleLabel.ForeColor = isError ? ErrorBorderColor : SuccessBorderColor;
+            titleLabel.Location = new Point(20, 20);
+            titleLabel.Size = new Size(360, 25);
 
-            Label lblText = new Label();
-            lblText.Text = text;
-            lblText.Font = new Font("Segoe UI", 11, FontStyle.Regular);
-            lblText.ForeColor = Color.White;
-            lblText.Location = new Point(20, 55);
-            lblText.Size = new Size(360, 60);
+            Label messageLabel = new Label();
+            messageLabel.Text = text;
+            messageLabel.Font = new Font("Segoe UI", 11, FontStyle.Regular);
+            messageLabel.ForeColor = Color.White;
+            messageLabel.Location = new Point(20, 55);
+            messageLabel.Size = new Size(360, 60);
+            messageLabel.AutoSize = true;
+            messageLabel.MaximumSize = new Size(360, 0);
 
-            Button btnOk = new Button();
-            btnOk.Text = "OK";
-            btnOk.Font = new Font("Segoe UI", 10, FontStyle.Bold);
-            btnOk.Size = new Size(100, 35);
-            btnOk.Location = new Point(280, 145);
-            btnOk.BackColor = Color.FromArgb(68, 68, 70);
-            btnOk.ForeColor = Color.White;
-            btnOk.FlatStyle = FlatStyle.Flat;
-            btnOk.FlatAppearance.BorderSize = 0;
-            btnOk.Cursor = Cursors.Hand;
-            btnOk.Click += (s, e) => { this.DialogResult = DialogResult.OK; this.Close(); };
+            Button okButton = new Button();
+            okButton.Text = "OK";
+            okButton.Font = new Font("Segoe UI", 10, FontStyle.Bold);
+            okButton.Size = new Size(100, 35);
+            okButton.Location = new Point(280, 145);
+            okButton.BackColor = OkButtonColor;
+            okButton.ForeColor = Color.White;
+            okButton.FlatStyle = FlatStyle.Flat;
+            okButton.FlatAppearance.BorderSize = 0;
+            okButton.Cursor = Cursors.Hand;
+            okButton.Click += (s, e) => { this.DialogResult = DialogResult.OK; this.Close(); };
 
-            this.Controls.Add(lblTitle);
-            this.Controls.Add(lblText);
-            this.Controls.Add(btnOk);
+            this.Controls.Add(titleLabel);
+            this.Controls.Add(messageLabel);
+            this.Controls.Add(okButton);
 
             this.Paint += (s, e) =>
             {
-                Color borderColor = isError ? Color.FromArgb(255, 69, 58) : Color.FromArgb(0, 122, 255);
-                using (Pen pen = new Pen(borderColor, 2))
-                {
-                    e.Graphics.DrawRectangle(pen, 1, 1, this.Width - 2, this.Height - 2);
-                }
+                Color borderColor = isError ? ErrorBorderColor : SuccessBorderColor;
+                using (Pen borderPen = new Pen(borderColor, BorderThickness))
+                    e.Graphics.DrawRectangle(borderPen, 1, 1, this.Width - 2, this.Height - 2);
             };
         }
-
+        
+        /// <summary>
+        /// Показывает диалоговое окно с гарантированным центрированием относительно родителя
+        /// </summary>
         public static void Show(Form owner, string text, string title, bool isError = false)
         {
-            using (var msgBox = new CustomMessageBox(text, title, isError))
+            using (var messageDialog = new CustomMessageBox(text, title, isError))
             {
-                msgBox.Owner = owner; 
-                msgBox.ShowDialog(owner);
+                messageDialog.Owner = owner;
+                
+                // Программный точный расчет координат центра родительского окна
+                int centerX = owner.Location.X + (owner.Width - messageDialog.Width) / 2;
+                int centerY = owner.Location.Y + (owner.Height - messageDialog.Height) / 2;
+                messageDialog.Location = new Point(centerX, centerY);
+
+                messageDialog.ShowDialog(owner);
             }
         }
     }
